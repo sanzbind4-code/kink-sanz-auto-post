@@ -82,61 +82,6 @@ async function sendChannelText(text) {
   };
 }
 
-async function sendStatusText(text) {
-  if (!connected || !sock) {
-    throw new Error('WhatsApp belum terhubung.');
-  }
-
-  const recipients = getContactJids();
-
-  if (recipients.length === 0) {
-    throw new Error(
-      'Daftar kontak penerima kosong. Status tidak dikirim.'
-    );
-  }
-
-  const result = await sock.sendMessage(
-    'status@broadcast',
-    {
-      text,
-      backgroundColor: '#075985',
-      font: 2
-    },
-    {
-      broadcast: true,
-      statusJidList: recipients
-    }
-  );
-
-  const status = result?.status || 'UNKNOWN';
-
-  console.log('[STATUS SEND RESULT]', JSON.stringify({
-    key: result?.key || null,
-    status,
-    recipients: recipients.length,
-    account: sock.user?.id || null
-  }, null, 2));
-
-  // Message ID atau PENDING bukan bukti Status sudah terbit.
-  const confirmed = [
-    'PUBLISHED',
-    'SERVER_ACK',
-    'DELIVERY_ACK'
-  ].includes(status);
-
-  return {
-    ok: confirmed,
-    acceptedByLibrary: Boolean(getMessageId(result)),
-    messageId: getMessageId(result),
-    status,
-    recipients: recipients.length,
-    destination: 'status@broadcast',
-    note: confirmed
-      ? 'Library memberi status pengiriman lanjutan. Tetap periksa WhatsApp.'
-      : 'Status belum terkonfirmasi terbit. Periksa log Baileys dan WhatsApp.'
-  };
-}
-
 async function connectWhatsApp() {
   if (reconnecting) return;
 
