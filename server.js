@@ -1043,7 +1043,7 @@ app.listen(
   '0.0.0.0',
   ()=>{
     console.log(
-      \`Server berjalan di port \${PORT}\`
+      `Server berjalan di port ${PORT}`
     );
 
     console.log(
