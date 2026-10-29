@@ -465,9 +465,3 @@ app.listen(PORT, HOST, () => {
     );
   });
 });
-'''
-
-path = Path("/mnt/data/server.js")
-path.write_text(server, encoding="utf-8")
-print("Selesai:", path)
-  
