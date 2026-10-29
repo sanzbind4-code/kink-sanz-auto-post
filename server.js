@@ -188,7 +188,7 @@ async function sendStatusText(text) {
     recipients: recipients.length,
     account: sock.user?.id || null
   });
-
+console.log('[STATUS SEND RESULT]', JSON.stringify(result, null, 2));
   return {
     ok: true,
     messageId: result?.key?.id || null,
