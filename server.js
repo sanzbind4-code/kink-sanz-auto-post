@@ -22,24 +22,13 @@ let channelName = null;
 let lastPost = null;
 let lastError = null;
 
-// =========================
 // EXPRESS
-// =========================
+app.use(express.json({ limit: '30mb' }));
 
-app.use(express.json({
-  limit: '30mb'
-}));
-
-// =========================
 // CORS
-// =========================
-
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader(
-    'Access-Control-Allow-Methods',
-    'GET,POST,OPTIONS'
-  );
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
     'Content-Type, x-callback-secret, X-Japost-Secret, Authorization'
@@ -52,10 +41,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// =========================
 // SECRET CHECK
-// =========================
-
 function checkSecret(req) {
   const headerSecret =
     req.headers['x-callback-secret'] ||
@@ -78,25 +64,20 @@ function checkSecret(req) {
   );
 }
 
-// =========================
 // CHANNEL
-// =========================
-
 async function resolveChannel() {
   if (!sock) return;
 
   try {
     if (CHANNEL_LINK) {
-      const inviteCode =
-        CHANNEL_LINK.split('/').pop();
+      const inviteCode = CHANNEL_LINK.split('/').pop();
 
       if (inviteCode) {
         try {
-          const meta =
-            await sock.newsletterMetadata(
-              'invite',
-              inviteCode
-            );
+          const meta = await sock.newsletterMetadata(
+            'invite',
+            inviteCode
+          );
 
           if (meta?.id) {
             channelJid = meta.id;
@@ -118,13 +99,11 @@ async function resolveChannel() {
     }
 
     if (!channelJid) {
-      channelJid =
-        '120363406356211250@newsletter';
+      channelJid = '120363406356211250@newsletter';
     }
 
     if (!channelName) {
-      channelName =
-        'JAPOST KINKSANZ (GRATIS)';
+      channelName = 'JAPOST KINKSANZ (GRATIS)';
     }
 
     console.log('CHANNEL JID:', channelJid);
@@ -138,21 +117,14 @@ async function resolveChannel() {
   }
 }
 
-// =========================
 // START WHATSAPP
-// =========================
-
 async function startWhatsApp() {
-  const {
-    state,
-    saveCreds
-  } = await useMultiFileAuthState('./auth_info');
+  const { state, saveCreds } =
+    await useMultiFileAuthState('./auth_info');
 
   sock = makeWASocket({
     auth: state,
-    logger: pino({
-      level: 'silent'
-    }),
+    logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     browser: [
       'Kink Sanz Japost',
@@ -161,10 +133,7 @@ async function startWhatsApp() {
     ]
   });
 
-  sock.ev.on(
-    'creds.update',
-    saveCreds
-  );
+  sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on(
     'connection.update',
@@ -175,35 +144,31 @@ async function startWhatsApp() {
         qr
       } = update;
 
+      // QR
       if (qr) {
         qrData = await QRCode.toDataURL(qr);
         connected = false;
 
-        console.log(
-          'QR tersedia di /qr'
-        );
+        console.log('QR tersedia di /qr');
       }
 
+      // CONNECTED
       if (connection === 'open') {
         connected = true;
         qrData = null;
         lastError = null;
 
-        console.log(
-          'WhatsApp TERHUBUNG'
-        );
+        console.log('WhatsApp TERHUBUNG');
 
         await resolveChannel();
       }
 
+      // DISCONNECTED
       if (connection === 'close') {
         connected = false;
 
         const statusCode =
-          lastDisconnect
-            ?.error
-            ?.output
-            ?.statusCode;
+          lastDisconnect?.error?.output?.statusCode;
 
         console.log(
           'WhatsApp terputus:',
@@ -228,10 +193,7 @@ async function startWhatsApp() {
   );
 }
 
-// =========================
 // SEND TO CHANNEL
-// =========================
-
 async function sendToChannel(
   text,
   imageData
@@ -268,6 +230,7 @@ async function sendToChannel(
           base64,
           'base64'
         );
+
     } else if (
       typeof imageData === 'string' &&
       imageData.startsWith('http')
@@ -281,9 +244,10 @@ async function sendToChannel(
         );
       }
 
-      imageBuffer = Buffer.from(
-        await response.arrayBuffer()
-      );
+      imageBuffer =
+        Buffer.from(
+          await response.arrayBuffer()
+        );
     }
 
     if (!imageBuffer) {
@@ -310,10 +274,7 @@ async function sendToChannel(
   );
 }
 
-// =========================
 // HOME
-// =========================
-
 app.get('/', (req, res) => {
   res.send(`
 <!DOCTYPE html>
@@ -327,7 +288,7 @@ body{
   font-family:Arial,sans-serif;
   background:#07152e;
   color:white;
-  padding:30px;
+  padding:30px
 }
 
 .box{
@@ -335,7 +296,7 @@ body{
   margin:auto;
   background:#0d2347;
   padding:25px;
-  border-radius:15px;
+  border-radius:15px
 }
 
 input,button{
@@ -344,23 +305,24 @@ input,button{
   margin-top:10px;
   box-sizing:border-box;
   border-radius:8px;
-  border:0;
+  border:0
 }
 
 button{
   background:#16a9ff;
   color:white;
   font-weight:bold;
-  cursor:pointer;
+  cursor:pointer
 }
 
 pre{
   background:#061226;
   padding:15px;
   border-radius:10px;
-  overflow:auto;
+  overflow:auto
 }
 </style>
+
 </head>
 
 <body>
@@ -438,7 +400,6 @@ async function testPost(){
           headers:{
             'Content-Type':
               'application/json',
-
             'x-callback-secret':
               secret
           }
@@ -478,10 +439,7 @@ setInterval(
   `);
 });
 
-// =========================
 // QR
-// =========================
-
 app.get('/qr', (req, res) => {
 
   if (!qrData) {
@@ -493,6 +451,7 @@ app.get('/qr', (req, res) => {
   res.send(`
 <!DOCTYPE html>
 <html>
+
 <body
 style="
 background:#07152e;
@@ -512,45 +471,33 @@ style="max-width:350px;"
 </body>
 </html>
   `);
+
 });
 
-// =========================
 // STATUS
-// =========================
+app.get('/api/status', (req, res) => {
 
-app.get(
-  '/api/status',
-  (req, res) => {
+  res.json({
+    ok: true,
+    connection:
+      connected
+        ? 'connected'
+        : 'disconnected',
 
-    res.json({
-      ok: true,
-      connection:
-        connected
-          ? 'connected'
-          : 'disconnected',
+    qr: !!qrData,
 
-      qr: !!qrData,
+    channelJid,
 
-      channelJid:
-        channelJid,
+    channelName,
 
-      channelName:
-        channelName,
+    lastPost,
 
-      lastPost:
-        lastPost,
+    lastError
+  });
 
-      lastError:
-        lastError
-    });
+});
 
-  }
-);
-
-// =========================
 // TEST POST
-// =========================
-
 app.post(
   '/api/test-post',
   async (req, res) => {
@@ -558,13 +505,14 @@ app.post(
     try {
 
       if (!checkSecret(req)) {
+
         return res
           .status(401)
           .json({
-            ok:false,
-            error:
-              'Unauthorized'
+            ok: false,
+            error: 'Unauthorized'
           });
+
       }
 
       const message =
@@ -582,23 +530,20 @@ app.post(
         messageId:
           sent?.key?.id || null,
 
-        type:
-          'text'
+        type: 'text'
       };
 
       lastError = null;
 
       res.json({
-        ok:true,
+        ok: true,
 
         messageId:
           sent?.key?.id || null,
 
-        channelJid:
-          channelJid,
+        channelJid,
 
-        type:
-          'text',
+        type: 'text',
 
         note:
           'Periksa Channel untuk memastikan pesan terlihat'
@@ -617,18 +562,16 @@ app.post(
       res
         .status(500)
         .json({
-          ok:false,
-          error:e.message
+          ok: false,
+          error: e.message
         });
+
     }
 
   }
 );
 
-// =========================
 // CALLBACK WEBSITE
-// =========================
-
 app.post(
   '/api/callback',
   async (req, res) => {
@@ -644,12 +587,13 @@ app.post(
 
     console.log(
       'BODY KEYS:',
-      Object.keys(req.body || {})
+      Object.keys(
+        req.body || {}
+      )
     );
 
     try {
 
-      // SECRET
       if (!checkSecret(req)) {
 
         console.log(
@@ -659,29 +603,11 @@ app.post(
         return res
           .status(401)
           .json({
-            ok:false,
-            error:
-              'Unauthorized'
+            ok: false,
+            error: 'Unauthorized'
           });
+
       }
-
-      /*
-        Website bisa mengirim:
-
-        {
-          order:{
-            format:"...",
-            photoDataUrl:"..."
-          }
-        }
-
-        atau langsung:
-
-        {
-          format:"...",
-          photoDataUrl:"..."
-        }
-      */
 
       const order =
         req.body?.order ||
@@ -710,10 +636,11 @@ app.post(
         return res
           .status(400)
           .json({
-            ok:false,
+            ok: false,
             error:
               'Format/order kosong'
           });
+
       }
 
       console.log(
@@ -737,14 +664,14 @@ app.post(
         );
 
       const messageId =
-        sent?.key?.id || null;
+        sent?.key?.id ||
+        null;
 
       lastPost = {
         time:
           new Date().toISOString(),
 
-        messageId:
-          messageId,
+        messageId,
 
         type:
           image
@@ -760,13 +687,11 @@ app.post(
       );
 
       res.json({
-        ok:true,
+        ok: true,
 
-        messageId:
-          messageId,
+        messageId,
 
-        channelJid:
-          channelJid,
+        channelJid,
 
         type:
           image
@@ -783,33 +708,28 @@ app.post(
         '========== CALLBACK ERROR =========='
       );
 
-      console.error(
-        e
-      );
+      console.error(e);
 
       res
         .status(500)
         .json({
-          ok:false,
-          error:
-            e.message
+          ok: false,
+          error: e.message
         });
+
     }
 
   }
 );
 
-// =========================
 // 404
-// =========================
-
 app.use(
   (req, res) => {
 
     res
       .status(404)
       .json({
-        ok:false,
+        ok: false,
         error:
           'Endpoint tidak ditemukan'
       });
@@ -817,10 +737,7 @@ app.use(
   }
 );
 
-// =========================
 // START SERVER
-// =========================
-
 app.listen(
   PORT,
   '0.0.0.0',
@@ -832,7 +749,7 @@ app.listen(
 
     console.log(
       'Auto-post endpoint:',
-      `/api/callback`
+      '/api/callback'
     );
 
     startWhatsApp()
