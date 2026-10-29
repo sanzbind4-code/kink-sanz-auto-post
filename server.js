@@ -171,10 +171,17 @@ async function sendStatusText(text) {
   }
 
   const result = await sock.sendMessage(
-    'status@broadcast',
-    { text },
-    { statusJidList: recipients }
-  );
+  'status@broadcast',
+  {
+    text,
+    backgroundColor: '#075985',
+    font: 2
+  },
+  {
+    broadcast: true,
+    statusJidList: recipients
+  }
+);
 
   return {
     ok: true,
