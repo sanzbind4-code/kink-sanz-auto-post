@@ -1,6 +1,4 @@
-from pathlib import Path
-
-server = r'''import 'dotenv/config';
+import 'dotenv/config';
 import express from 'express';
 import QRCode from 'qrcode';
 import pino from 'pino';
