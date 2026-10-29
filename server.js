@@ -195,17 +195,6 @@ async function connectWhatsApp() {
   reconnecting = false;
 }
 
-app.get('/api/status', (req, res) => {
-  res.json({
-    connected,
-    status: connected ? 'connected' : 'disconnected',
-    channelName: CHANNEL_NAME,
-    channelJid: CHANNEL_JID,
-    contactCount: contacts.size,
-    lastTest
-  });
-});
-
 app.get('/api/qr', async (req, res) => {
   if (connected) {
     return res.type('text').send('WhatsApp sudah terhubung.');
@@ -436,10 +425,6 @@ placeholder="Masukkan CALLBACK_SECRET FadeHost">
 
 <button onclick="test('/api/test-channel')">
 TES SALURAN WHATSAPP
-</button>
-
-<button onclick="test('/api/test-status')">
-TES STATUS WHATSAPP
 </button>
 
 <h3>Hasil tes terakhir</h3>
