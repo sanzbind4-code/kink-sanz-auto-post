@@ -74,6 +74,15 @@ async function connectWhatsApp() {
     });
 
     sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('messages.update', (updates) => {
+  for (const update of updates || []) {
+    const key = update.key || {};
+
+    if (key.remoteJid === 'status@broadcast') {
+      console.log('[STATUS UPDATE]', JSON.stringify(update, null, 2));
+    }
+  }
+});
 
     sock.ev.on('contacts.upsert', items => {
       for (const item of items || []) {
