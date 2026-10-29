@@ -1,529 +1,852 @@
-
+import 'dotenv/config';
 import express from 'express';
-import dotenv from 'dotenv';
-import QRCode from 'qrcode';
 import pino from 'pino';
+import QRCode from 'qrcode';
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason
 } from '@itsliaaa/baileys';
 
-import fs from 'node:fs';
-
-dotenv.config();
-
 const app = express();
+
 const PORT = Number(process.env.PORT) || 8080;
-const HOST = '0.0.0.0';
-const AUTH_DIR = './auth_info';
-
-const CHANNEL_LINK =
-  process.env.CHANNEL_LINK ||
-  'https://whatsapp.com/channel/0029VbC8YTVGehEH4EHdMz44';
-
-app.use(express.json({ limit: '20mb' }));
-
-const logger = pino({ level: 'silent' });
+const CALLBACK_SECRET = process.env.CALLBACK_SECRET || '';
+const CHANNEL_LINK = process.env.CHANNEL_LINK || '';
 
 let sock = null;
-let connection = 'connecting';
-let qrText = null;
+let qrData = null;
+let connected = false;
 let channelJid = null;
-let channelName = 'JAPOST KINKSANZ (GRATIS)';
+let channelName = null;
+
 let lastPost = null;
 let lastError = null;
-let starting = false;
-let reconnectTimer = null;
 
-function getName(value) {
-  if (typeof value === 'string') return value;
+// =========================
+// EXPRESS
+// =========================
 
-  if (value && typeof value === 'object') {
-    return value.text || value.name || value.title || '';
+app.use(express.json({
+  limit: '30mb'
+}));
+
+// =========================
+// CORS
+// =========================
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader(
+    'Access-Control-Allow-Methods',
+    'GET,POST,OPTIONS'
+  );
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, x-callback-secret, X-Japost-Secret, Authorization'
+  );
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
   }
 
-  return '';
-}
+  next();
+});
 
-function safeError(error) {
-  return String(error?.message || error || 'Unknown error')
-    .replace(/[\r\n]+/g, ' ')
-    .slice(0, 400);
-}
+// =========================
+// SECRET CHECK
+// =========================
 
-function authorized(req) {
-  const secret = process.env.CALLBACK_SECRET;
-  if (!secret) return false;
+function checkSecret(req) {
+  const headerSecret =
+    req.headers['x-callback-secret'] ||
+    req.headers['x-japost-secret'];
+
+  const auth = req.headers.authorization || '';
+
+  let bearerSecret = '';
+
+  if (auth.toLowerCase().startsWith('bearer ')) {
+    bearerSecret = auth.slice(7);
+  }
+
+  const bodySecret = req.body?.secret || '';
 
   return (
-    req.get('x-callback-secret') === secret ||
-    req.get('authorization') === `Bearer ${secret}` ||
-    req.body?.secret === secret
+    headerSecret === CALLBACK_SECRET ||
+    bearerSecret === CALLBACK_SECRET ||
+    bodySecret === CALLBACK_SECRET
   );
 }
+
+// =========================
+// CHANNEL
+// =========================
 
 async function resolveChannel() {
-  if (!sock || connection !== 'connected') {
-    throw new Error('WhatsApp belum connected');
-  }
-
-  const inviteCode = CHANNEL_LINK.split('/').filter(Boolean).pop();
-
-  const metadata = await sock.newsletterMetadata(
-    'invite',
-    inviteCode
-  );
-
-  channelJid = metadata?.id || null;
-
-  channelName =
-    getName(metadata?.name) ||
-    getName(metadata?.thread_metadata?.name) ||
-    channelName;
-
-  if (!channelJid) {
-    throw new Error('Channel JID tidak ditemukan');
-  }
-
-  return { channelJid, channelName };
-}
-
-async function startWhatsApp() {
-  if (starting) return;
-  starting = true;
+  if (!sock) return;
 
   try {
-    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    if (CHANNEL_LINK) {
+      const inviteCode =
+        CHANNEL_LINK.split('/').pop();
 
-    const { state, saveCreds } =
-      await useMultiFileAuthState(AUTH_DIR);
-
-    sock = makeWASocket({
-      auth: state,
-      logger,
-      printQRInTerminal: false,
-      browser: ['Kink Sanz Auto Post', 'Chrome', '1.0.0'],
-      syncFullHistory: false
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', async update => {
-      if (update.qr) {
-        qrText = update.qr;
-        connection = 'qr';
-      }
-
-      if (update.connection === 'open') {
-        connection = 'connected';
-        qrText = null;
-        lastError = null;
-
+      if (inviteCode) {
         try {
-          await resolveChannel();
-          console.log('Channel berhasil dideteksi:', channelName);
-        } catch (error) {
-          lastError = safeError(error);
-          console.error('CHANNEL ERROR:', lastError);
+          const meta =
+            await sock.newsletterMetadata(
+              'invite',
+              inviteCode
+            );
+
+          if (meta?.id) {
+            channelJid = meta.id;
+          }
+
+          channelName =
+            typeof meta?.name === 'string'
+              ? meta.name
+              : meta?.name?.text ||
+                meta?.name?.default ||
+                'JAPOST KINKSANZ (GRATIS)';
+        } catch (e) {
+          console.log(
+            'Gagal mengambil metadata channel:',
+            e.message
+          );
         }
       }
+    }
 
-      if (update.connection === 'close') {
-        const code =
-          update.lastDisconnect?.error?.output?.statusCode;
+    if (!channelJid) {
+      channelJid =
+        '120363406356211250@newsletter';
+    }
 
-        connection = 'disconnected';
-        channelJid = null;
-        sock = null;
+    if (!channelName) {
+      channelName =
+        'JAPOST KINKSANZ (GRATIS)';
+    }
 
-        console.error('WHATSAPP CLOSED:', code || 'unknown');
+    console.log('CHANNEL JID:', channelJid);
+    console.log('CHANNEL NAME:', channelName);
 
-        if (code === DisconnectReason.loggedOut) {
-          lastError =
-            'Sesi WhatsApp logout. Hubungkan kembali melalui QR.';
-          return;
-        }
-
-        if (reconnectTimer) clearTimeout(reconnectTimer);
-
-        reconnectTimer = setTimeout(() => {
-          startWhatsApp().catch(error => {
-            lastError = safeError(error);
-            console.error('RECONNECT ERROR:', lastError);
-          });
-        }, 3000);
-      }
-    });
-  } catch (error) {
-    connection = 'error';
-    lastError = safeError(error);
-    console.error('START ERROR:', lastError);
-  } finally {
-    starting = false;
+  } catch (e) {
+    console.log(
+      'Resolve channel error:',
+      e.message
+    );
   }
 }
 
-function parseImage(value) {
-  if (typeof value !== 'string' || !value.trim()) return null;
+// =========================
+// START WHATSAPP
+// =========================
 
-  const dataUrl = value.match(
-    /^data:image\/(jpeg|jpg|png|webp);base64,([\s\S]+)$/i
+async function startWhatsApp() {
+  const {
+    state,
+    saveCreds
+  } = await useMultiFileAuthState('./auth_info');
+
+  sock = makeWASocket({
+    auth: state,
+    logger: pino({
+      level: 'silent'
+    }),
+    printQRInTerminal: false,
+    browser: [
+      'Kink Sanz Japost',
+      'Chrome',
+      '1.0.0'
+    ]
+  });
+
+  sock.ev.on(
+    'creds.update',
+    saveCreds
   );
 
-  if (dataUrl) {
-    return {
-      image: Buffer.from(dataUrl[2], 'base64'),
-      mimetype:
-        'image/' +
-        dataUrl[1].toLowerCase().replace('jpg', 'jpeg')
-    };
-  }
+  sock.ev.on(
+    'connection.update',
+    async (update) => {
+      const {
+        connection,
+        lastDisconnect,
+        qr
+      } = update;
 
-  if (/^https?:\/\//i.test(value)) {
-    return { url: value };
-  }
+      if (qr) {
+        qrData = await QRCode.toDataURL(qr);
+        connected = false;
 
-  const raw = value.replace(/^data:[^,]+,/, '');
+        console.log(
+          'QR tersedia di /qr'
+        );
+      }
 
-  if (/^[A-Za-z0-9+/=\r\n]+$/.test(raw) && raw.length > 100) {
-    return {
-      image: Buffer.from(raw, 'base64'),
-      mimetype: 'image/jpeg'
-    };
-  }
+      if (connection === 'open') {
+        connected = true;
+        qrData = null;
+        lastError = null;
 
-  return null;
+        console.log(
+          'WhatsApp TERHUBUNG'
+        );
+
+        await resolveChannel();
+      }
+
+      if (connection === 'close') {
+        connected = false;
+
+        const statusCode =
+          lastDisconnect
+            ?.error
+            ?.output
+            ?.statusCode;
+
+        console.log(
+          'WhatsApp terputus:',
+          statusCode
+        );
+
+        if (
+          statusCode !==
+          DisconnectReason.loggedOut
+        ) {
+          setTimeout(
+            startWhatsApp,
+            3000
+          );
+        } else {
+          console.log(
+            'WhatsApp logout. Scan QR baru.'
+          );
+        }
+      }
+    }
+  );
 }
 
-async function prepareImage(value) {
-  const parsed = parseImage(value);
-  if (!parsed) return null;
+// =========================
+// SEND TO CHANNEL
+// =========================
 
-  if (parsed.url) {
-    const response = await fetch(parsed.url);
+async function sendToChannel(
+  text,
+  imageData
+) {
+  if (!sock || !connected) {
+    throw new Error(
+      'WhatsApp belum terhubung'
+    );
+  }
 
-    if (!response.ok) {
-      throw new Error(
-        `Foto gagal diunduh: HTTP ${response.status}`
+  if (!channelJid) {
+    await resolveChannel();
+  }
+
+  if (!channelJid) {
+    throw new Error(
+      'Channel JID belum ditemukan'
+    );
+  }
+
+  // FOTO
+  if (imageData) {
+    let imageBuffer;
+
+    if (
+      typeof imageData === 'string' &&
+      imageData.startsWith('data:')
+    ) {
+      const base64 =
+        imageData.split(',')[1];
+
+      imageBuffer =
+        Buffer.from(
+          base64,
+          'base64'
+        );
+    } else if (
+      typeof imageData === 'string' &&
+      imageData.startsWith('http')
+    ) {
+      const response =
+        await fetch(imageData);
+
+      if (!response.ok) {
+        throw new Error(
+          'Gagal mengambil foto dari URL'
+        );
+      }
+
+      imageBuffer = Buffer.from(
+        await response.arrayBuffer()
       );
     }
 
-    const contentType =
-      response.headers.get('content-type') || '';
-
-    if (!contentType.startsWith('image/')) {
-      throw new Error('URL tidak mengembalikan gambar');
+    if (!imageBuffer) {
+      throw new Error(
+        'Format foto tidak valid'
+      );
     }
 
-    const buffer = Buffer.from(await response.arrayBuffer());
-
-    if (buffer.length > 10 * 1024 * 1024) {
-      throw new Error('Foto melebihi batas 10 MB');
-    }
-
-    return {
-      image: buffer,
-      mimetype: contentType.split(';')[0]
-    };
-  }
-
-  if (!parsed.image?.length) {
-    throw new Error('Data foto kosong');
-  }
-
-  if (parsed.image.length > 10 * 1024 * 1024) {
-    throw new Error('Foto melebihi batas 10 MB');
-  }
-
-  return parsed;
-}
-
-async function sendToChannel(format, photoValue) {
-  if (!sock || connection !== 'connected') {
-    throw new Error('WhatsApp belum connected');
-  }
-
-  if (!channelJid) await resolveChannel();
-
-  const image = await prepareImage(photoValue);
-
-  const payload = image
-    ? {
-        image: image.image,
-        caption: format,
-        mimetype: image.mimetype
+    return await sock.sendMessage(
+      channelJid,
+      {
+        image: imageBuffer,
+        caption: text || ''
       }
-    : { text: format };
-
-  const result = await sock.sendMessage(channelJid, payload);
-
-  if (!result?.key?.id) {
-    throw new Error('ID pesan tidak diterima dari WhatsApp');
+    );
   }
 
-  lastPost = {
-    time: new Date().toISOString(),
-    messageId: result.key.id,
-    type: image ? 'image' : 'text'
-  };
-
-  lastError = null;
-
-  return {
-    messageId: result.key.id,
+  // TEXT
+  return await sock.sendMessage(
     channelJid,
-    type: image ? 'image' : 'text'
-  };
+    {
+      text: text || ''
+    }
+  );
 }
 
-app.get('/health', (req, res) => {
-  res.json({ ok: true, service: 'Kink Sanz Auto Post' });
-});
-
-app.get('/api/status', (req, res) => {
-  res.json({
-    ok: connection === 'connected' && Boolean(channelJid),
-    connection,
-    qr: Boolean(qrText),
-    channelJid,
-    channelName,
-    lastPost,
-    lastError
-  });
-});
-
-app.get('/qr', async (req, res) => {
-  if (!qrText) {
-    return res.status(404).send(
-      `QR belum tersedia. Status WhatsApp: ${connection}`
-    );
-  }
-
-  try {
-    const image = await QRCode.toDataURL(qrText);
-
-    res.send(`<!doctype html>
-<html lang="id">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>QR Kink Sanz</title>
-<body style="font-family:Arial;text-align:center;padding:20px">
-<h2>Scan QR Kink Sanz</h2>
-<img src="${image}" style="max-width:100%;width:320px">
-<p>Buka WhatsApp → Perangkat tertaut → Tautkan perangkat.</p>
-</body></html>`);
-  } catch (error) {
-    res.status(500).send('QR ERROR: ' + safeError(error));
-  }
-});
-
-app.post('/api/resolve-channel', async (req, res) => {
-  try {
-    res.json({
-      ok: true,
-      ...(await resolveChannel())
-    });
-  } catch (error) {
-    lastError = safeError(error);
-    res.status(500).json({
-      ok: false,
-      error: lastError
-    });
-  }
-});
-
-app.post('/api/test-post', async (req, res) => {
-  if (!authorized(req)) {
-    return res.status(401).json({
-      ok: false,
-      error: 'CALLBACK_SECRET tidak cocok atau belum disetel'
-    });
-  }
-
-  try {
-    const result = await sendToChannel(
-      'TEST AUTO POST KINK SANZ',
-      null
-    );
-
-    res.json({
-      ok: true,
-      ...result,
-      note: 'Periksa Channel untuk memastikan pesan terlihat'
-    });
-  } catch (error) {
-    lastError = safeError(error);
-    console.error('TEST POST ERROR:', lastError);
-
-    res.status(500).json({
-      ok: false,
-      error: lastError
-    });
-  }
-});
-
-app.post('/api/callback', async (req, res) => {
-  if (!authorized(req)) {
-    return res.status(401).json({
-      ok: false,
-      error: 'Unauthorized: secret tidak cocok'
-    });
-  }
-
-  try {
-    const order = req.body?.order || req.body || {};
-
-    const format =
-      order.format ||
-      order.text ||
-      order.caption;
-
-    if (typeof format !== 'string' || !format.trim()) {
-      throw new Error('Format posting kosong');
-    }
-
-    const photo =
-      order.photoDataUrl ||
-      order.photoData ||
-      order.photo ||
-      order.image ||
-      null;
-
-    const result = await sendToChannel(format.trim(), photo);
-
-    console.log('AUTO POST ACCEPTED:', result);
-
-    res.json({
-      ok: true,
-      ...result,
-      note: 'Periksa Channel untuk memastikan postingan terlihat'
-    });
-  } catch (error) {
-    lastError = safeError(error);
-    console.error('AUTO POST FAILED:', lastError);
-
-    res.status(500).json({
-      ok: false,
-      error: lastError
-    });
-  }
-});
+// =========================
+// HOME
+// =========================
 
 app.get('/', (req, res) => {
-  res.send(`<!doctype html>
-<html lang="id">
+  res.send(`
+<!DOCTYPE html>
+<html>
 <head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="UTF-8">
 <title>Kink Sanz Auto Post</title>
+
 <style>
-*{box-sizing:border-box}
-body{font-family:Arial,sans-serif;background:#071629;color:#fff;padding:18px}
-main{max-width:650px;margin:auto}
-.card{background:#102844;padding:18px;border-radius:14px;margin:12px 0}
-button,a{background:#14b8e6;color:#001322;border:0;padding:12px 16px;
-border-radius:9px;font-weight:bold;text-decoration:none;display:inline-block;
-margin:4px 2px;cursor:pointer}
-input{width:100%;padding:12px;border-radius:8px;border:1px solid #496780;
-background:#071629;color:#fff;margin:8px 0}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#a9e8ff}
-small{color:#c1d4e5}
-button:disabled{opacity:.5}
+body{
+  font-family:Arial,sans-serif;
+  background:#07152e;
+  color:white;
+  padding:30px;
+}
+
+.box{
+  max-width:700px;
+  margin:auto;
+  background:#0d2347;
+  padding:25px;
+  border-radius:15px;
+}
+
+input,button{
+  width:100%;
+  padding:13px;
+  margin-top:10px;
+  box-sizing:border-box;
+  border-radius:8px;
+  border:0;
+}
+
+button{
+  background:#16a9ff;
+  color:white;
+  font-weight:bold;
+  cursor:pointer;
+}
+
+pre{
+  background:#061226;
+  padding:15px;
+  border-radius:10px;
+  overflow:auto;
+}
 </style>
 </head>
-<body><main>
+
+<body>
+
+<div class="box">
+
 <h2>Kink Sanz Auto Post</h2>
 
-<div class="card">
-<p>Server: <b>ONLINE</b></p>
-<p id="connection">Memuat status...</p>
-<p id="channel"></p>
-<a href="/qr">SCAN QR WHATSAPP</a>
-<button onclick="refreshStatus()">REFRESH STATUS</button>
-</div>
+<p>Status server:</p>
 
-<div class="card">
-<h3>TEST POST</h3>
-<p>Mengirim teks percobaan ke Channel WhatsApp.</p>
-<label for="secret">CALLBACK_SECRET FadeHost</label>
-<input id="secret" type="password" autocomplete="off"
-placeholder="Masukkan secret yang sudah tersimpan">
-<small>Jangan bagikan secret kepada siapa pun.</small>
-<p><button id="testButton" onclick="testPost()">KIRIM TEST POST</button></p>
-<pre id="testResult">Belum ada tes.</pre>
-</div>
+<pre id="status">
+Loading...
+</pre>
 
-<div class="card">
-<h3>Status JSON</h3>
-<pre id="data"></pre>
+<input
+  id="secret"
+  type="password"
+  placeholder="CALLBACK_SECRET"
+>
+
+<button onclick="testPost()">
+KIRIM TEST POST
+</button>
+
+<pre id="result"></pre>
+
 </div>
 
 <script>
-async function refreshStatus(){
-  try{
-    const response=await fetch('/api/status',{cache:'no-store'});
-    const d=await response.json();
 
-    document.getElementById('connection').textContent=
-      'WhatsApp: '+d.connection;
-    document.getElementById('channel').textContent=
-      'Channel: '+d.channelName;
-    document.getElementById('data').textContent=
-      JSON.stringify(d,null,2);
-  }catch(error){
-    document.getElementById('data').textContent=String(error);
+async function loadStatus(){
+
+  try{
+
+    const r =
+      await fetch('/api/status');
+
+    const d =
+      await r.json();
+
+    document.getElementById(
+      'status'
+    ).textContent =
+      JSON.stringify(
+        d,
+        null,
+        2
+      );
+
+  }catch(e){
+
+    document.getElementById(
+      'status'
+    ).textContent =
+      e.message;
+
   }
+
 }
 
 async function testPost(){
-  const secret=document.getElementById('secret').value.trim();
-  const button=document.getElementById('testButton');
-  const output=document.getElementById('testResult');
 
-  if(!secret){
-    output.textContent='Masukkan CALLBACK_SECRET terlebih dahulu.';
-    return;
-  }
-
-  button.disabled=true;
-  output.textContent='Mengirim tes...';
+  const secret =
+    document.getElementById(
+      'secret'
+    ).value;
 
   try{
-    const response=await fetch('/api/test-post',{
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-callback-secret':secret
-      },
-      body:JSON.stringify({})
-    });
 
-    const data=await response.json();
-    output.textContent=JSON.stringify(data,null,2);
+    const r =
+      await fetch(
+        '/api/test-post',
+        {
+          method:'POST',
+          headers:{
+            'Content-Type':
+              'application/json',
 
-    if(data.ok){
-      output.textContent +=
-        '\\nPeriksa Channel untuk memastikan pesan terlihat.';
-    }
+            'x-callback-secret':
+              secret
+          }
+        }
+      );
 
-    await refreshStatus();
-  }catch(error){
-    output.textContent='Request gagal: '+String(error);
-  }finally{
-    button.disabled=false;
+    const text =
+      await r.text();
+
+    document.getElementById(
+      'result'
+    ).textContent =
+      text;
+
+  }catch(e){
+
+    document.getElementById(
+      'result'
+    ).textContent =
+      e.message;
+
   }
+
 }
 
-refreshStatus();
-setInterval(refreshStatus,10000);
+loadStatus();
+
+setInterval(
+  loadStatus,
+  5000
+);
+
 </script>
-</main></body></html>`);
+
+</body>
+</html>
+  `);
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`Kink Sanz Auto Post listening on ${HOST}:${PORT}`);
+// =========================
+// QR
+// =========================
 
-  startWhatsApp().catch(error => {
-    lastError = safeError(error);
-    console.error('WHATSAPP START ERROR:', lastError);
-  });
+app.get('/qr', (req, res) => {
+
+  if (!qrData) {
+    return res.send(
+      'QR tidak tersedia. WhatsApp mungkin sudah terhubung.'
+    );
+  }
+
+  res.send(`
+<!DOCTYPE html>
+<html>
+<body
+style="
+background:#07152e;
+color:white;
+text-align:center;
+font-family:Arial;
+padding:30px;
+">
+
+<h2>Scan QR WhatsApp</h2>
+
+<img
+src="${qrData}"
+style="max-width:350px;"
+>
+
+</body>
+</html>
+  `);
 });
-    
+
+// =========================
+// STATUS
+// =========================
+
+app.get(
+  '/api/status',
+  (req, res) => {
+
+    res.json({
+      ok: true,
+      connection:
+        connected
+          ? 'connected'
+          : 'disconnected',
+
+      qr: !!qrData,
+
+      channelJid:
+        channelJid,
+
+      channelName:
+        channelName,
+
+      lastPost:
+        lastPost,
+
+      lastError:
+        lastError
+    });
+
+  }
+);
+
+// =========================
+// TEST POST
+// =========================
+
+app.post(
+  '/api/test-post',
+  async (req, res) => {
+
+    try {
+
+      if (!checkSecret(req)) {
+        return res
+          .status(401)
+          .json({
+            ok:false,
+            error:
+              'Unauthorized'
+          });
+      }
+
+      const message =
+        'TEST AUTO POST KINK SANZ';
+
+      const sent =
+        await sendToChannel(
+          message
+        );
+
+      lastPost = {
+        time:
+          new Date().toISOString(),
+
+        messageId:
+          sent?.key?.id || null,
+
+        type:
+          'text'
+      };
+
+      lastError = null;
+
+      res.json({
+        ok:true,
+
+        messageId:
+          sent?.key?.id || null,
+
+        channelJid:
+          channelJid,
+
+        type:
+          'text',
+
+        note:
+          'Periksa Channel untuk memastikan pesan terlihat'
+      });
+
+    } catch (e) {
+
+      lastError =
+        e.message;
+
+      console.error(
+        'TEST POST ERROR:',
+        e
+      );
+
+      res
+        .status(500)
+        .json({
+          ok:false,
+          error:e.message
+        });
+    }
+
+  }
+);
+
+// =========================
+// CALLBACK WEBSITE
+// =========================
+
+app.post(
+  '/api/callback',
+  async (req, res) => {
+
+    console.log(
+      '========== CALLBACK MASUK =========='
+    );
+
+    console.log(
+      'TIME:',
+      new Date().toISOString()
+    );
+
+    console.log(
+      'BODY KEYS:',
+      Object.keys(req.body || {})
+    );
+
+    try {
+
+      // SECRET
+      if (!checkSecret(req)) {
+
+        console.log(
+          'CALLBACK DITOLAK: SECRET SALAH'
+        );
+
+        return res
+          .status(401)
+          .json({
+            ok:false,
+            error:
+              'Unauthorized'
+          });
+      }
+
+      /*
+        Website bisa mengirim:
+
+        {
+          order:{
+            format:"...",
+            photoDataUrl:"..."
+          }
+        }
+
+        atau langsung:
+
+        {
+          format:"...",
+          photoDataUrl:"..."
+        }
+      */
+
+      const order =
+        req.body?.order ||
+        req.body ||
+        {};
+
+      const text =
+        order.format ||
+        order.text ||
+        order.caption ||
+        '';
+
+      const image =
+        order.photoDataUrl ||
+        order.photoData ||
+        order.photo ||
+        order.image ||
+        null;
+
+      if (!text && !image) {
+
+        console.log(
+          'CALLBACK DITOLAK: FORMAT KOSONG'
+        );
+
+        return res
+          .status(400)
+          .json({
+            ok:false,
+            error:
+              'Format/order kosong'
+          });
+      }
+
+      console.log(
+        'FORMAT:',
+        text
+          ? 'ADA'
+          : 'TIDAK ADA'
+      );
+
+      console.log(
+        'FOTO:',
+        image
+          ? 'ADA'
+          : 'TIDAK ADA'
+      );
+
+      const sent =
+        await sendToChannel(
+          text,
+          image
+        );
+
+      const messageId =
+        sent?.key?.id || null;
+
+      lastPost = {
+        time:
+          new Date().toISOString(),
+
+        messageId:
+          messageId,
+
+        type:
+          image
+            ? 'image'
+            : 'text'
+      };
+
+      lastError = null;
+
+      console.log(
+        'AUTO POST BERHASIL:',
+        messageId
+      );
+
+      res.json({
+        ok:true,
+
+        messageId:
+          messageId,
+
+        channelJid:
+          channelJid,
+
+        type:
+          image
+            ? 'image'
+            : 'text'
+      });
+
+    } catch (e) {
+
+      lastError =
+        e.message;
+
+      console.error(
+        '========== CALLBACK ERROR =========='
+      );
+
+      console.error(
+        e
+      );
+
+      res
+        .status(500)
+        .json({
+          ok:false,
+          error:
+            e.message
+        });
+    }
+
+  }
+);
+
+// =========================
+// 404
+// =========================
+
+app.use(
+  (req, res) => {
+
+    res
+      .status(404)
+      .json({
+        ok:false,
+        error:
+          'Endpoint tidak ditemukan'
+      });
+
+  }
+);
+
+// =========================
+// START SERVER
+// =========================
+
+app.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+
+    console.log(
+      `Server berjalan di port ${PORT}`
+    );
+
+    console.log(
+      'Auto-post endpoint:',
+      `/api/callback`
+    );
+
+    startWhatsApp()
+      .catch((e) => {
+
+        lastError =
+          e.message;
+
+        console.error(
+          'Gagal start WhatsApp:',
+          e
+        );
+
+      });
+
+  }
+);
