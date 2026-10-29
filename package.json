@@ -1,19 +1,16 @@
+
 {
-  "name": "kink-sanz-auto-post-backend",
-  "version": "2.2.0",
-  "private": true,
+  "name": "kink-sanz-auto-post",
+  "version": "1.0.0",
   "type": "module",
-  "engines": {
-    "node": ">=20"
-  },
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "@itsliaaa/baileys": "0.4.2",
-    "dotenv": "^17.2.2",
-    "express": "^5.1.0",
-    "pino": "^9.7.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pino": "^9.6.0",
     "qrcode": "^1.5.4"
   }
 }
