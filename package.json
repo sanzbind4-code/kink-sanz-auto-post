@@ -1,12 +1,16 @@
 {
   "name": "kink-sanz-auto-post-backend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
-  "scripts": { "start": "node server.js" },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "@itsliaaa/baileys": "0.3.18-final",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
     "pino": "^9.7.0",
