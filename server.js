@@ -369,4 +369,66 @@ app.post('/api/callback',async(req,res)=>{
     const image=order.photoDataUrl||order.photoData||order.photo||order.image||null;
 
     if(!text&&!image){
-      console.log('CALLBACK DITOLAK: FORMAT K
+      console.log('CALLBACK DITOLAK: FORMAT KOSONG');
+
+      return res.status(400).json({
+        ok:false,
+        error:'Format/order kosong'
+      });
+    }
+
+    console.log('FORMAT:',text?'ADA':'TIDAK ADA');
+    console.log('FOTO:',image?'ADA':'TIDAK ADA');
+
+    const sent=await sendToChannel(text,image);
+
+    const messageId=sent?.key?.id||null;
+
+    lastPost={
+      time:new Date().toISOString(),
+      messageId,
+      type:image?'image':'text'
+    };
+
+    lastError=null;
+
+    console.log('AUTO POST BERHASIL:',messageId);
+
+    res.json({
+      ok:true,
+      messageId,
+      channelJid,
+      type:image?'image':'text'
+    });
+
+  }catch(e){
+    lastError=e.message;
+
+    console.error('========== CALLBACK ERROR ==========');
+    console.error(e);
+
+    res.status(500).json({
+      ok:false,
+      error:e.message
+    });
+  }
+});
+
+// 404
+app.use((req,res)=>{
+  res.status(404).json({
+    ok:false,
+    error:'Endpoint tidak ditemukan'
+  });
+});
+
+// START SERVER
+app.listen(PORT,'0.0.0.0',()=>{
+  console.log(`Server berjalan di port ${PORT}`);
+  console.log('Auto-post endpoint:',`/api/callback`);
+
+  startWhatsApp().catch((e)=>{
+    lastError=e.message;
+    console.error('Gagal start WhatsApp:',e);
+  });
+});
