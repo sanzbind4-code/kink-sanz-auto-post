@@ -164,31 +164,36 @@ async function sendStatusText(text) {
 
   const recipients = getContactJids();
 
+  if (!recipients.includes(sock.user?.id) && sock.user?.id) {
+    recipients.push(sock.user.id);
+  }
+
   if (recipients.length === 0) {
-    throw new Error(
-      'Daftar kontak penerima kosong. Status belum dicoba dikirim.'
-    );
+    throw new Error('Tidak ada JID penerima Status.');
   }
 
   const result = await sock.sendMessage(
-  'status@broadcast',
-  {
-    text,
-    backgroundColor: '#075985',
-    font: 2
-  },
-  {
-    broadcast: true,
-    statusJidList: recipients
-  }
-);
+    'status@broadcast',
+    { text },
+    {
+      backgroundColor: '#075985',
+      font: 2,
+      statusJidList: recipients,
+      broadcast: true
+    }
+  );
+
+  console.log('[STATUS TEST]', {
+    messageId: result?.key?.id || null,
+    recipients: recipients.length,
+    account: sock.user?.id || null
+  });
 
   return {
     ok: true,
     messageId: result?.key?.id || null,
     recipients: recipients.length,
-    destination: 'status@broadcast',
-    note: 'API mengembalikan hasil kirim. Periksa WhatsApp untuk memastikan Status benar-benar muncul.'
+    note: 'Permintaan dikirim. Verifikasi apakah Status benar-benar tampil di WhatsApp.'
   };
 }
 
