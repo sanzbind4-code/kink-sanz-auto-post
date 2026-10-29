@@ -11,7 +11,6 @@ import 'dotenv/config';
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CALLBACK_SECRET = process.env.CALLBACK_SECRET || '';
-const CHANNEL_LINK = process.env.CHANNEL_LINK || '';
 const CHANNEL_JID = '120363406356211250@newsletter';
 const CHANNEL_NAME = 'JAPOST KINKSANZ (GRATIS)';
 
@@ -21,10 +20,12 @@ let sock;
 let connected = false;
 let qrText = '';
 let lastTest = null;
-let contacts = new Set();
 let reconnecting = false;
 
-const logger = pino({ level: 'silent' });
+const contacts = new Set();
+const logger = pino({
+  level: process.env.BAILEYS_LOG_LEVEL || 'warn'
+});
 
 function requireSecret(req, res, next) {
   if (!CALLBACK_SECRET) {
@@ -51,13 +52,94 @@ function getContactJids() {
     result.add(sock.user.id);
   }
 
-  return [...result].filter(jid =>
-    typeof jid === 'string' && jid.includes('@')
+  return [...result].filter(
+    jid => typeof jid === 'string' && jid.includes('@')
   );
+}
+
+function getMessageId(result) {
+  return result?.key?.id || null;
+}
+
+async function sendChannelText(text) {
+  if (!connected || !sock) {
+    throw new Error('WhatsApp belum terhubung.');
+  }
+
+  const result = await sock.sendMessage(CHANNEL_JID, { text });
+
+  console.log('[CHANNEL SEND RESULT]', JSON.stringify({
+    id: getMessageId(result),
+    remoteJid: result?.key?.remoteJid,
+    status: result?.status
+  }));
+
+  return {
+    ok: true,
+    messageId: getMessageId(result),
+    destination: CHANNEL_JID,
+    note: 'Permintaan kirim Saluran diproses. Periksa Saluran untuk memastikan pesan tampil.'
+  };
+}
+
+async function sendStatusText(text) {
+  if (!connected || !sock) {
+    throw new Error('WhatsApp belum terhubung.');
+  }
+
+  const recipients = getContactJids();
+
+  if (recipients.length === 0) {
+    throw new Error(
+      'Daftar kontak penerima kosong. Status tidak dikirim.'
+    );
+  }
+
+  const result = await sock.sendMessage(
+    'status@broadcast',
+    {
+      text,
+      backgroundColor: '#075985',
+      font: 2
+    },
+    {
+      broadcast: true,
+      statusJidList: recipients
+    }
+  );
+
+  const status = result?.status || 'UNKNOWN';
+
+  console.log('[STATUS SEND RESULT]', JSON.stringify({
+    key: result?.key || null,
+    status,
+    recipients: recipients.length,
+    account: sock.user?.id || null
+  }, null, 2));
+
+  // Message ID atau PENDING bukan bukti Status sudah terbit.
+  const confirmed = [
+    'PUBLISHED',
+    'SERVER_ACK',
+    'DELIVERY_ACK'
+  ].includes(status);
+
+  return {
+    ok: confirmed,
+    acceptedByLibrary: Boolean(getMessageId(result)),
+    messageId: getMessageId(result),
+    status,
+    recipients: recipients.length,
+    destination: 'status@broadcast',
+    note: confirmed
+      ? 'Library memberi status pengiriman lanjutan. Tetap periksa WhatsApp.'
+      : 'Status belum terkonfirmasi terbit. Periksa log Baileys dan WhatsApp.'
+  };
 }
 
 async function connectWhatsApp() {
   if (reconnecting) return;
+
   reconnecting = true;
 
   try {
@@ -74,15 +156,23 @@ async function connectWhatsApp() {
     });
 
     sock.ev.on('creds.update', saveCreds);
-    sock.ev.on('messages.update', (updates) => {
-  for (const update of updates || []) {
-    const key = update.key || {};
 
-    if (key.remoteJid === 'status@broadcast') {
-      console.log('[STATUS UPDATE]', JSON.stringify(update, null, 2));
-    }
-  }
-});
+    // Memantau pembaruan pesan, termasuk hasil yang terkait Status.
+    sock.ev.on('messages.update', updates => {
+      console.log(
+        '[MESSAGES UPDATE RAW]',
+        JSON.stringify(updates, null, 2)
+      );
+
+      for (const update of updates || []) {
+        if (update?.key?.remoteJid === 'status@broadcast') {
+          console.log(
+            '[STATUS UPDATE]',
+            JSON.stringify(update, null, 2)
+          );
+        }
+      }
+    });
 
     sock.ev.on('contacts.upsert', items => {
       for (const item of items || []) {
@@ -102,7 +192,7 @@ async function connectWhatsApp() {
       }
     });
 
-    sock.ev.on('connection.update', async update => {
+    sock.ev.on('connection.update', update => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -113,7 +203,11 @@ async function connectWhatsApp() {
       if (connection === 'open') {
         connected = true;
         qrText = '';
-        console.log('WhatsApp terhubung:', sock.user?.id || 'connected');
+
+        console.log(
+          'WhatsApp terhubung:',
+          sock.user?.id || 'connected'
+        );
       }
 
       if (connection === 'close') {
@@ -122,7 +216,10 @@ async function connectWhatsApp() {
         const statusCode =
           lastDisconnect?.error?.output?.statusCode;
 
-        console.log('Koneksi terputus. Kode:', statusCode || 'unknown');
+        console.log(
+          'Koneksi terputus. Kode:',
+          statusCode || 'unknown'
+        );
 
         if (statusCode !== DisconnectReason.loggedOut) {
           setTimeout(() => {
@@ -130,80 +227,27 @@ async function connectWhatsApp() {
             connectWhatsApp();
           }, 3000);
         } else {
-          console.log(
-            'Sesi logout. Periksa sesi WhatsApp dan lakukan pairing ulang.'
+          reconnecting = false;
+          console.error(
+            'Sesi logout. Pairing ulang mungkin diperlukan. Jangan hapus session tanpa backup.'
           );
         }
       }
     });
   } catch (err) {
     connected = false;
-    console.error('Gagal membuat koneksi WhatsApp:', err.message);
+    reconnecting = false;
 
-    setTimeout(() => {
-      reconnecting = false;
-      connectWhatsApp();
-    }, 5000);
+    console.error(
+      'Gagal membuat koneksi WhatsApp:',
+      err?.stack || err?.message || err
+    );
 
+    setTimeout(connectWhatsApp, 5000);
     return;
   }
 
   reconnecting = false;
-}
-
-async function sendChannelText(text) {
-  if (!connected || !sock) {
-    throw new Error('WhatsApp belum terhubung.');
-  }
-
-  const result = await sock.sendMessage(CHANNEL_JID, { text });
-
-  return {
-    ok: true,
-    messageId: result?.key?.id || null,
-    destination: CHANNEL_JID,
-    note: 'Pesan dikirim ke API Saluran; periksa Saluran untuk memastikan tampil.'
-  };
-}
-
-async function sendStatusText(text) {
-  if (!connected || !sock) {
-    throw new Error('WhatsApp belum terhubung.');
-  }
-
-  const recipients = getContactJids();
-
-  if (!recipients.includes(sock.user?.id) && sock.user?.id) {
-    recipients.push(sock.user.id);
-  }
-
-  if (recipients.length === 0) {
-    throw new Error('Tidak ada JID penerima Status.');
-  }
-
-  const result = await sock.sendMessage(
-    'status@broadcast',
-    { text },
-    {
-      backgroundColor: '#075985',
-      font: 2,
-      statusJidList: recipients,
-      broadcast: true
-    }
-  );
-
-  console.log('[STATUS TEST]', {
-    messageId: result?.key?.id || null,
-    recipients: recipients.length,
-    account: sock.user?.id || null
-  });
-console.log('[STATUS SEND RESULT]', JSON.stringify(result, null, 2));
-  return {
-    ok: true,
-    messageId: result?.key?.id || null,
-    recipients: recipients.length,
-    note: 'Permintaan dikirim. Verifikasi apakah Status benar-benar tampil di WhatsApp.'
-  };
 }
 
 app.get('/api/status', (req, res) => {
@@ -243,7 +287,9 @@ app.get('/api/qr', async (req, res) => {
 
 app.post('/api/test-channel', requireSecret, async (req, res) => {
   try {
-    const text = String(req.body?.text || 'TES SALURAN KINK SANZ');
+    const text = String(
+      req.body?.text || 'TES SALURAN KINK SANZ'
+    );
 
     const result = await sendChannelText(text);
 
@@ -268,7 +314,9 @@ app.post('/api/test-channel', requireSecret, async (req, res) => {
 
 app.post('/api/test-status', requireSecret, async (req, res) => {
   try {
-    const text = String(req.body?.text || 'TES STATUS KINK SANZ');
+    const text = String(
+      req.body?.text || 'TES STATUS KINK SANZ'
+    );
 
     const result = await sendStatusText(text);
 
@@ -278,7 +326,7 @@ app.post('/api/test-status', requireSecret, async (req, res) => {
       result
     };
 
-    res.json(lastTest);
+    res.status(result.ok ? 200 : 502).json(lastTest);
   } catch (err) {
     lastTest = {
       time: new Date().toISOString(),
@@ -291,76 +339,72 @@ app.post('/api/test-status', requireSecret, async (req, res) => {
   }
 });
 
-app.post('/api/japost', async (req, res) => {
+async function sendBoth(text) {
+  const results = {};
+
   try {
-    if (!connected || !sock) {
-      return res.status(503).json({
-        ok: false,
-        error: 'WhatsApp belum terhubung.'
-      });
-    }
-
-    const text = String(req.body?.text || '').trim();
-
-    if (!text) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Teks Japost kosong.'
-      });
-    }
-
-    const results = {
-      channel: { ok: false },
-      status: { ok: false }
+    results.channel = {
+      ok: true,
+      result: await sendChannelText(text)
     };
-
-    try {
-      results.channel = {
-        ok: true,
-        result: await sendChannelText(text)
-      };
-    } catch (err) {
-      results.channel = {
-        ok: false,
-        error: err.message
-      };
-    }
-
-    try {
-      results.status = {
-        ok: true,
-        result: await sendStatusText(text)
-      };
-    } catch (err) {
-      results.status = {
-        ok: false,
-        error: err.message
-      };
-    }
-
-    const ok = results.channel.ok || results.status.ok;
-
-    lastTest = {
-      time: new Date().toISOString(),
-      type: 'JAPOST',
-      results
-    };
-
-    res.status(ok ? 200 : 500).json({
-      ok,
-      partial: results.channel.ok !== results.status.ok,
-      results
-    });
   } catch (err) {
-    res.status(500).json({
+    results.channel = {
       ok: false,
       error: err.message
+    };
+  }
+
+  try {
+    results.status = await sendStatusText(text);
+  } catch (err) {
+    results.status = {
+      ok: false,
+      error: err.message
+    };
+  }
+
+  return results;
+}
+
+app.post('/api/japost', async (req, res) => {
+  if (!connected || !sock) {
+    return res.status(503).json({
+      ok: false,
+      error: 'WhatsApp belum terhubung.'
     });
   }
+
+  const text = String(req.body?.text || '').trim();
+
+  if (!text) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Teks Japost kosong.'
+    });
+  }
+
+  const results = await sendBoth(text);
+  const channelOK = Boolean(results.channel?.ok);
+  const statusOK = Boolean(results.status?.ok);
+  const ok = channelOK || statusOK;
+
+  lastTest = {
+    time: new Date().toISOString(),
+    type: 'JAPOST',
+    results
+  };
+
+  res.status(ok ? 200 : 502).json({
+    ok,
+    partial: channelOK !== statusOK,
+    results
+  });
 });
 
 app.post('/api/callback', requireSecret, async (req, res) => {
-  const text = String(req.body?.text || req.body?.format || '').trim();
+  const text = String(
+    req.body?.text || req.body?.format || ''
+  ).trim();
 
   if (!text) {
     return res.status(400).json({
@@ -369,46 +413,29 @@ app.post('/api/callback', requireSecret, async (req, res) => {
     });
   }
 
-  try {
-    const results = {};
-
-    try {
-      results.channel = {
-        ok: true,
-        result: await sendChannelText(text)
-      };
-    } catch (err) {
-      results.channel = { ok: false, error: err.message };
-    }
-
-    try {
-      results.status = {
-        ok: true,
-        result: await sendStatusText(text)
-      };
-    } catch (err) {
-      results.status = { ok: false, error: err.message };
-    }
-
-    const ok = results.channel.ok || results.status.ok;
-
-    lastTest = {
-      time: new Date().toISOString(),
-      type: 'CALLBACK',
-      results
-    };
-
-    res.status(ok ? 200 : 500).json({
-      ok,
-      partial: results.channel.ok !== results.status.ok,
-      results
-    });
-  } catch (err) {
-    res.status(500).json({
+  if (!connected || !sock) {
+    return res.status(503).json({
       ok: false,
-      error: err.message
+      error: 'WhatsApp belum terhubung.'
     });
   }
+
+  const results = await sendBoth(text);
+  const channelOK = Boolean(results.channel?.ok);
+  const statusOK = Boolean(results.status?.ok);
+  const ok = channelOK || statusOK;
+
+  lastTest = {
+    time: new Date().toISOString(),
+    type: 'CALLBACK',
+    results
+  };
+
+  res.status(ok ? 200 : 502).json({
+    ok,
+    partial: channelOK !== statusOK,
+    results
+  });
 });
 
 app.get('/', (req, res) => {
@@ -437,10 +464,17 @@ img{max-width:100%;height:auto;border-radius:10px}
 <body>
 <main>
 <h1>Kink Sanz Auto Post</h1>
-<div class="card">Status koneksi: <span id="connection">Memuat...</span></div>
+
+<div class="card">
+Status koneksi: <span id="connection">Memuat...</span>
+</div>
+
 <div class="card">Channel: ${CHANNEL_NAME}</div>
 <div class="card">Channel ID: ${CHANNEL_JID}</div>
-<div class="card">Kontak penerima status: <span id="contacts">-</span></div>
+
+<div class="card">
+Kontak penerima status: <span id="contacts">-</span>
+</div>
 
 <div id="qrbox" class="card" hidden>
 <p>Scan QR melalui Perangkat Tertaut WhatsApp.</p>
@@ -455,58 +489,103 @@ placeholder="Masukkan CALLBACK_SECRET FadeHost">
 <label>Pesan tes</label>
 <input id="message" value="TES AUTO POST KINK SANZ">
 
-<button onclick="test('/api/test-channel')">TES SALURAN WHATSAPP</button>
-<button onclick="test('/api/test-status')">TES STATUS WHATSAPP</button>
+<button onclick="test('/api/test-channel')">
+TES SALURAN WHATSAPP
+</button>
+
+<button onclick="test('/api/test-status')">
+TES STATUS WHATSAPP
+</button>
 
 <h3>Hasil tes terakhir</h3>
 <pre id="result">Belum ada tes. Tekan salah satu tombol.</pre>
-<p class="small">Tes akan mengirim pesan sungguhan. Respons API sukses belum menjamin Status terlihat di semua perangkat.</p>
+
+<p class="small">
+Tes mengirim pesan sungguhan. PENDING bukan bukti Status sudah terbit.
+</p>
 </main>
+
 <script>
 async function refreshStatus(){
   try{
-    const r=await fetch('/api/status');
-    const d=await r.json();
-    const el=document.getElementById('connection');
-    el.textContent=d.connected?'connected':'disconnected';
-    el.className=d.connected?'green':'';
-    document.getElementById('contacts').textContent=d.contactCount ?? 0;
-    document.getElementById('qrbox').hidden=!!d.connected;
-    if(!d.connected) document.getElementById('qrimg').src='/api/qr?t='+Date.now();
-    if(d.lastTest) document.getElementById('result').textContent=JSON.stringify(d.lastTest,null,2);
-  }catch(e){
-    document.getElementById('connection').textContent='Gagal membaca status';
+    const r = await fetch('/api/status');
+    const d = await r.json();
+
+    const el = document.getElementById('connection');
+    el.textContent = d.connected ? 'connected' : 'disconnected';
+    el.className = d.connected ? 'green' : '';
+
+    document.getElementById('contacts').textContent =
+      d.contactCount ?? 0;
+
+    document.getElementById('qrbox').hidden = !!d.connected;
+
+    if (!d.connected) {
+      document.getElementById('qrimg').src =
+        '/api/qr?t=' + Date.now();
+    }
+
+    if (d.lastTest) {
+      document.getElementById('result').textContent =
+        JSON.stringify(d.lastTest, null, 2);
+    }
+  } catch(e) {
+    document.getElementById('connection').textContent =
+      'Gagal membaca status';
   }
 }
+
 function refreshQR(){
-  document.getElementById('qrimg').src='/api/qr?t='+Date.now();
+  document.getElementById('qrimg').src =
+    '/api/qr?t=' + Date.now();
 }
+
 async function test(endpoint){
-  const secret=document.getElementById('secret').value.trim();
-  const text=document.getElementById('message').value.trim();
-  const out=document.getElementById('result');
-  if(!secret){out.textContent='Isi CALLBACK_SECRET terlebih dahulu.';return;}
-  if(!text){out.textContent='Pesan tes kosong.';return;}
-  const buttons=[...document.querySelectorAll('button')];
-  buttons.forEach(b=>b.disabled=true);
-  out.textContent='Sedang mengirim tes...';
-  try{
-    const r=await fetch(endpoint,{
-      method:'POST',
-      headers:{'Content-Type':'application/json','X-Japost-Secret':secret},
-      body:JSON.stringify({text})
+  const secret = document.getElementById('secret').value.trim();
+  const text = document.getElementById('message').value.trim();
+  const out = document.getElementById('result');
+
+  if (!secret) {
+    out.textContent = 'Isi CALLBACK_SECRET terlebih dahulu.';
+    return;
+  }
+
+  if (!text) {
+    out.textContent = 'Pesan tes kosong.';
+    return;
+  }
+
+  const buttons = [...document.querySelectorAll('button')];
+  buttons.forEach(b => b.disabled = true);
+  out.textContent = 'Sedang mengirim tes...';
+
+  try {
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Japost-Secret': secret
+      },
+      body: JSON.stringify({ text })
     });
-    const data=await r.json().catch(()=>({error:'Respons bukan JSON'}));
-    out.textContent='HTTP '+r.status+'\\n'+JSON.stringify(data,null,2);
-  }catch(e){
-    out.textContent='Gagal menghubungi server: '+e.message;
-  }finally{
-    buttons.forEach(b=>b.disabled=false);
+
+    const data = await r.json().catch(() => ({
+      error: 'Respons bukan JSON'
+    }));
+
+    out.textContent =
+      'HTTP ' + r.status + '\\n' +
+      JSON.stringify(data, null, 2);
+  } catch(e) {
+    out.textContent = 'Gagal menghubungi server: ' + e.message;
+  } finally {
+    buttons.forEach(b => b.disabled = false);
     refreshStatus();
   }
 }
+
 refreshStatus();
-setInterval(refreshStatus,10000);
+setInterval(refreshStatus, 10000);
 </script>
 </body>
 </html>`);
