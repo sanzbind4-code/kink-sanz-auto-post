@@ -1146,6 +1146,7 @@ app.listen(PORT, () => {
 
 connectWhatsApp().catch((err) => {
   console.error(
-  '[INITIAL CONNECT ERROR]',
-  err?.stack || err
-);
+    '[INITIAL CONNECT ERROR]',
+    err?.stack || err
+  );
+});
